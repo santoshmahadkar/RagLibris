@@ -1,0 +1,31 @@
+# RagLibris - Direct Application Dependencies
+
+# Frontend
+streamlit
+
+# Backend API
+fastapi
+uvicorn
+
+# HTTP / Configuration
+requests
+python-dotenv
+
+# RAG / Vector Database
+chromadb
+
+# Local Embeddings
+ollama
+
+# LLM
+groq
+
+# Google Drive
+google-api-python-client
+google-auth
+google-auth-oauthlib
+
+# Document Processing
+python-docx
+pandas
+pillow
