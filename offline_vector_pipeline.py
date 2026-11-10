@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from read_docx import read_docx_from_drive
 from resume_chunker import is_resume_text, chunk_resume_text
 from generic_chunker import chunk_generic_text
-
+import pymupdf
 
 load_dotenv()
 
@@ -53,6 +53,7 @@ def scan_folder(creds, folder_id, file_path="", first_run=True):
         Calls the Google Drive API and writes file metadata locally.
     """
 
+    print(f"Folder scaning started")
     # Empty JSONL file only on the first call
     if first_run:
         with open(
@@ -386,11 +387,36 @@ def main():
                 text = file_content.decode("utf-8")
 
             elif mime_type == "application/pdf":
-                # The response bytes are decoded directly; no PDF text parser is used here.
+                # Download the PDF as raw bytes and extract readable text
+                # using PyMuPDF. PDF files are binary documents and must
+                # not be decoded directly as UTF-8 text.
+
                 request = service.files().get_media(fileId=file_id)
-                print(f"Downloading PDF file: {metadata['file_name']} (ID: {file_id})")
+
+                print(
+                    f"Downloading PDF file: "
+                    f"{metadata['file_name']} (ID: {file_id})"
+                )
+
                 file_content = request.execute()
-                text = file_content.decode("utf-8", errors="ignore")
+
+                with pymupdf.open(stream=file_content, filetype="pdf") as pdf:
+
+                    pages = []
+
+                    for page_number, page in enumerate(pdf, start=1):
+
+                        page_text = page.get_text("text")
+
+                        if page_text.strip():
+                            pages.append(page_text)
+
+                    text = "\n\n".join(pages).strip()
+
+                print(
+                    f"Extracted {len(text)} characters "
+                    f"from {metadata['file_name']}"
+                )
 
             elif mime_type.startswith("text/"):
                 # Text files

@@ -23,6 +23,7 @@ env/
 !.env.example
 
 credentials.json
+credentials_old.json
 token.json
 *.pem
 *.key
@@ -33,6 +34,7 @@ token.json
 # --------------------------------------------------
 
 chroma_db/
+samidha_chroma_db
 
 # --------------------------------------------------
 # Generated metadata / data

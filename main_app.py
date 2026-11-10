@@ -9,8 +9,9 @@ import ollama
 import chromadb
 from dotenv import load_dotenv
 from groq import Groq
+from openai import OpenAI
 import os
-# from chunk_engine import chunk_text
+from collections import defaultdict
 
 load_dotenv()
 
@@ -21,6 +22,47 @@ client = chromadb.PersistentClient(
     path=DB_PATH
 )
 collection = client.get_collection(name="google_drive_files")
+
+
+def group_chromadb_results(results):
+
+    print()
+    print()
+    print()
+    print(results)
+    print()
+    print()
+    print()
+
+    grouped = {}
+
+    documents = results["documents"][0]
+    metadatas = results["metadatas"][0]
+
+    for document, metadata in zip(documents, metadatas):
+
+        print(f"here is the extracted metadata: {metadata}")
+        file_id = metadata.get("file_id")
+        #weblink = metadata.get("web_view_link")
+
+        key = (file_id) #, weblink)
+
+        if key not in grouped:
+
+            grouped[key] = {
+                "file_id": file_id,
+                "file_name": metadata.get("file_name"),
+                #"weblink": weblink,
+                "contents": []
+            }
+
+        grouped[key]["contents"].append(document)
+
+    for record in grouped.values():
+
+        record["contents"] = "\n\n".join(record["contents"])
+
+    return list(grouped.values())
 
 # The question is divided by characters here; the indexed documents use the
 # separate word- and paragraph-aware chunker in generic_chunker.py.
@@ -156,7 +198,7 @@ def core_app(user_question):
     print("-" * 60)
     new_results = collection.query(
         query_embeddings=embeddings,
-        n_results=3*len(embeddings),
+        n_results=20*len(embeddings),
         include=[
             "documents",
             "metadatas",
@@ -167,18 +209,16 @@ def core_app(user_question):
         }
     )
 
-    print(f"Number of file_ids: {len(file_id)}")
+    grouped_records = group_chromadb_results(new_results)
 
-    print(new_results['documents'][0][0])
-    print()
-    print(new_results['documents'][0][1])
-    print()
-    print(new_results['documents'][0][2])
+    
+
 
     print(f"--> These are the number of new results for the user question")
     print("-" * 60)
+    print(f"Number of grouped records: {len(grouped_records)}")
 
-    print(f"New Results count: {len(new_results['documents'])}")
+    # print(f"New Results count: {len(grouped_records['documents'])}")
     
     # Build prompt context from the second query's first result group. The indexer
     # stores these metadata keys with each chunk for source attribution.
@@ -188,23 +228,34 @@ def core_app(user_question):
     print(f"--> Creating context from the new results to send it to the model for response.")
     print("-" * 60)
 
-    context = []
+    context = grouped_records
 
-    for i in range(len(new_results["documents"][0])):
-        # retrived_chunk = new_results["documents"][0][i]
-        metadata = new_results["metadatas"][0][i]
-        context_dict = {}
-        context_dict["file_name"] = metadata['file_name']
-        context_dict["contents"] = new_results['documents'][0][i]
-        context_dict["weblink"] = metadata['web_view_link']
-        context.append(context_dict)
+    # for i in range(len(new_results["documents"][0])):
+    #     # retrived_chunk = new_results["documents"][0][i]
+    #     metadata = new_results["metadatas"][0][i]
+    #     context_dict = {}
+    #     context_dict["file_name"] = metadata['file_name']
+    #     context_dict["contents"] = new_results['documents'][0][i]
+    #     context_dict["weblink"] = metadata['web_view_link']
+    #     context.append(context_dict)
 
     print(f"Context: {context}")
     print(len(context))
 
-    client = Groq()
+    # client = OpenAI(
+    #         base_url="http://localhost:11434/v1",
+    #         api_key="ollama"
+    #     )
+
+    # model = "lfm2.5-thinking:latest"
+    
+    client = OpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=os.getenv("GROQ_API_KEY")
+    )
 
     model = "openai/gpt-oss-120b"
+    
 
     response = client.chat.completions.create(
         model=model,
@@ -212,11 +263,12 @@ def core_app(user_question):
         {
                 "role": "user", 
                 "content": f"""Answer the following question: {user_question} based on the following \
-                context: {context} and give me the 'weblink' of that candidate from the context. \
+                context: {context} and give me the 'file_id' of that candidate from the context. \
                 If not available, just answer the question based on the context.
                 Answer should be in the following format:
                 Answer: Candidate XYZ is the best fit for power BI because he is having 5 years of experience in power BI and has worked on multiple projects.  
-                weblink: https://docs.google.com/document/d/1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p7q8r9s0t1u2v3w4x5y6z7/edit
+                weblink: FILE_ID_<file_id>
+                output should be in tabular format and ranked as per score and output columns should be "rank" "Candidate Name", "Summary Skills" "Skills Keywords" "Score" "Weblink"
                 """
             }
         ],
