@@ -1,66 +1,149 @@
-"""Download DOCX files from Google Drive and extract paragraph/table text."""
-
-from googleapiclient.http import MediaIoBaseDownload
-from docx import Document
 from io import BytesIO
+from zipfile import BadZipFile
+from docx import Document
+
 
 def read_docx_from_drive(service, file_id):
-    """Fetch a Drive DOCX and return its paragraph and table contents as text.
 
-    The download is streamed into memory, then parsed by ``python-docx``.
-    Non-empty paragraphs are kept in document order; table rows are rendered
-    with cell values separated by ``" | "`` and appended after the paragraphs.
-
-    Args:
-        service: Authorized Google Drive API service.
-        file_id: ID of the DOCX file to download.
-
-    Returns:
-        Extracted paragraph and table text joined with newline separators.
-
-    Side effects:
-        Downloads the file and prints transfer progress. Drive, download, and
-        DOCX parsing errors are not caught and propagate to the caller.
-    """
-
-    # Download DOCX file from Google Drive
-    request = service.files().get_media(
-        fileId=file_id,
-        supportsAllDrives=True
+    print(
+        f"Downloading DOCX file (ID: {file_id})",
+        flush=True
     )
 
-    file_buffer = BytesIO()
+    request = service.files().get_media(fileId=file_id)
 
-    downloader = MediaIoBaseDownload(
-        file_buffer,
-        request
+    file_content = request.execute()
+
+    print(
+        f"Downloaded DOCX file: {len(file_content)} bytes",
+        flush=True
     )
 
-    done = False
+    file_buffer = BytesIO(file_content)
 
-    while not done:
-        status, done = downloader.next_chunk()
-        print(f"Download progress: {int(status.progress() * 100)}%")
+    try:
 
-    # Move buffer position to beginning
-    file_buffer.seek(0)
+        doc = Document(file_buffer)
 
-    # Read DOCX content
-    doc = Document(file_buffer)
+    except (BadZipFile, KeyError, ValueError) as exc:
 
-    extracted_text = []
+        print(
+            f"WARNING: Unable to read DOCX file. "
+            f"Skipping file.",
+            flush=True
+        )
 
-    # Extract paragraphs
+        print(
+            f"Reason: {type(exc).__name__}: {exc}",
+            flush=True
+        )
+
+        return ""
+
+    sections = []
+
+    # --------------------------------------------------
+    # Extract normal paragraphs
+    # --------------------------------------------------
+
+    paragraphs = []
+
     for paragraph in doc.paragraphs:
-        if paragraph.text.strip():
-            extracted_text.append(paragraph.text)
 
+        text = paragraph.text.strip()
+
+        if text:
+            paragraphs.append(text)
+
+    if paragraphs:
+
+        sections.append(
+            "\n".join(paragraphs)
+        )
+
+    # --------------------------------------------------
     # Extract tables
-    for table in doc.tables:
-        for row in table.rows:
-            row_text = " | ".join(
-                cell.text.strip() for cell in row.cells
-            )
-            extracted_text.append(row_text)
+    # --------------------------------------------------
 
-    return "\n".join(extracted_text)
+    tables = []
+
+    for table in doc.tables:
+
+        rows = []
+
+        for row in table.rows:
+
+            cells = []
+
+            for cell in row.cells:
+
+                cell_text = cell.text.strip()
+
+                if cell_text:
+                    cells.append(cell_text)
+
+            if cells:
+
+                rows.append(
+                    " | ".join(cells)
+                )
+
+        if rows:
+
+            tables.append(
+                "\n".join(rows)
+            )
+
+    if tables:
+
+        sections.append(
+            "\n\n".join(tables)
+        )
+
+    # --------------------------------------------------
+    # Extract headers and footers
+    # --------------------------------------------------
+
+    headers_footers = []
+
+    for section in doc.sections:
+
+        # Header
+        for paragraph in section.header.paragraphs:
+
+            text = paragraph.text.strip()
+
+            if text:
+                headers_footers.append(text)
+
+        # Footer
+        for paragraph in section.footer.paragraphs:
+
+            text = paragraph.text.strip()
+
+            if text:
+                headers_footers.append(text)
+
+    if headers_footers:
+
+        sections.append(
+            "\n".join(headers_footers)
+        )
+
+    # --------------------------------------------------
+    # Combine extracted content
+    # --------------------------------------------------
+
+    text = "\n\n".join(
+        section
+        for section in sections
+        if section.strip()
+    ).strip()
+
+    print(
+        f"DOCX extraction completed: "
+        f"{len(text)} characters",
+        flush=True
+    )
+
+    return text

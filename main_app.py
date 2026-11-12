@@ -198,7 +198,7 @@ def core_app(user_question):
     print("-" * 60)
     new_results = collection.query(
         query_embeddings=embeddings,
-        n_results=20*len(embeddings),
+        n_results=15*len(embeddings),
         include=[
             "documents",
             "metadatas",

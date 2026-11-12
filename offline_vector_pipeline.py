@@ -20,6 +20,7 @@ from read_docx import read_docx_from_drive
 from resume_chunker import is_resume_text, chunk_resume_text
 from generic_chunker import chunk_generic_text
 import pymupdf
+from read_excel import read_excel_from_drive
 
 load_dotenv()
 
@@ -53,14 +54,35 @@ def scan_folder(creds, folder_id, file_path="", first_run=True):
         Calls the Google Drive API and writes file metadata locally.
     """
 
-    print(f"Folder scaning started")
+    SKIP_EXTENSIONS = [
+        ".zip",
+        ".rar",
+        ".7z",
+        ".exe",
+        ".msi",
+        ".dll",
+        ".iso",
+        ".bin",
+    ]
+
+    def get_skip_reason(file_name):
+
+        if not file_name:
+            return "Empty file name"
+
+        if file_name.startswith("~$"):
+            return "Office temporary/lock file"
+
+        extension = os.path.splitext(file_name)[1].lower()
+
+        if extension in SKIP_EXTENSIONS:
+            return f"Unsupported extension: {extension}"
+
+        return None
+
     # Empty JSONL file only on the first call
     if first_run:
-        with open(
-            "google_drive_metadata.jsonl",
-            "w",
-            encoding="utf-8"
-        ) as output_file:
+        with open("google_drive_metadata.jsonl", "w", encoding="utf-8" ) as output_file:
             pass
 
     # Connect to Google Drive
@@ -105,6 +127,16 @@ def scan_folder(creds, folder_id, file_path="", first_run=True):
                 "size": item.get("size"),
                 "web_view_link": item.get("webViewLink")
             }
+
+            file_name = metadata.get("file_name", "")
+
+            skip_reason = get_skip_reason(file_name)
+
+            if skip_reason:
+
+                print(f"Skipping file: {file_name} "f"| Reason: {skip_reason}", flush=True)
+
+                continue
 
             with open("google_drive_metadata.jsonl", "a", encoding="utf-8") as output_file:
                 output_file.write(json.dumps(metadata, ensure_ascii=False) + "\n")
@@ -158,24 +190,46 @@ def get_existing_file_state(collection, file_id):
             "size": metadata.get("size")
     }
 
-def get_unique_file_id_from_db(collection):
-    """Return distinct non-null ``file_id`` values present in ChromaDB."""
+def get_unique_file_id_from_db(collection, batch_size=500):
 
-    print("Getting unique file_ids from database")
+    file_ids = set()
 
-    results = collection.get(
-        include=["metadatas"]
+    total_records = collection.count()
+
+    print(
+        f"Total records in ChromaDB: {total_records}",
+        flush=True
     )
 
-    file_ids = []
+    for offset in range(0, total_records, batch_size):
 
-    for metadata in results["metadatas"]:
-        file_id = metadata.get("file_id")
+        print(
+            f"Reading ChromaDB records "
+            f"{offset + 1} to "
+            f"{min(offset + batch_size, total_records)}",
+            flush=True
+        )
 
-        if file_id is not None:
-            file_ids.append(file_id)
+        results = collection.get(
+            limit=batch_size,
+            offset=offset,
+            include=["metadatas"]
+        )
 
-    file_ids = list(set(file_ids))
+        for metadata in results.get("metadatas", []):
+
+            if not metadata:
+                continue
+
+            file_id = metadata.get("file_id")
+
+            if file_id:
+                file_ids.add(file_id)
+
+    print(
+        f"Unique file_ids found in ChromaDB: {len(file_ids)}",
+        flush=True
+    )
 
     return file_ids
 
@@ -283,6 +337,7 @@ def main():
     # Build the Drive client used for file downloads and refresh the full metadata snapshot.
     service = build('drive', 'v3', credentials=creds)
 
+    print(f"Folder scaning started")
     scan_folder(creds, GOOGLE_DRIVE_FOLDER_ID, "testing")
 
     client, collection = get_chromadb_collection()
@@ -429,9 +484,38 @@ def main():
                 # The helper receives the Drive service and ID; file_content is not passed to it.
                 request = service.files().get_media(fileId=file_id)
                 print(f"Downloading DOCX file: {metadata['file_name']} (ID: {file_id})")
+                
                 file_content = request.execute()
+                
+                print(f"Processing file: {metadata['file_name']}", flush=True)
+
+                print(f"Extension: {os.path.splitext(metadata['file_name'])[1].lower()}", flush=True)
+
+                print(f"MIME type: {metadata.get('mime_type')}", flush=True)
+
                 text = read_docx_from_drive(service, file_id)
-            
+                if not text.strip():
+
+                    print(
+                        f"Skipping file because no text could be extracted: "
+                        f"{metadata['file_name']}",
+                        flush=True
+                    )
+
+                    continue
+
+            elif mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+
+                print(
+                    f"Processing Excel file: {metadata['file_name']}",
+                    flush=True
+                )
+
+                text = read_excel_from_drive(
+                    service,
+                    file_id
+                )
+                
             else:
                 # Unsupported file types are not extracted or added to the index.
                 print(f"Unsupported mime type: {mime_type} for file ID: {file_id}")
