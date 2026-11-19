@@ -12,6 +12,8 @@ import re
 import chromadb
 import os
 from dotenv import load_dotenv
+import signal
+import threading
 
 load_dotenv()
 
@@ -95,6 +97,17 @@ def replace_file_ids_with_links(text, web_links):
         replace_match,
         text
     )
+
+def shutdown_server():
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+@app.post("/shutdown")
+def shutdown():
+    return {
+        "status": "shutting_down",
+        "pid": os.getpid()
+    }
 
 
 # --------------------------------------------------

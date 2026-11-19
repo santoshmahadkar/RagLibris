@@ -19,7 +19,7 @@ REM ============================================================
 
 echo [1/2] Starting FastAPI backend...
 
-start "RagLibris Backend" cmd /k ".venv\Scripts\python.exe -m uvicorn backend:app --host 0.0.0.0 --port 8000"
+start "RagLibris Backend" cmd /c ".venv\Scripts\python.exe -m uvicorn backend:app --host 0.0.0.0 --port 8000"
 
 echo Backend process started.
 echo.
@@ -53,7 +53,7 @@ REM ============================================================
 
 echo [2/2] Starting Streamlit frontend...
 
-start "RagLibris Frontend" cmd /k ".venv\Scripts\python.exe -m streamlit run frontend.py"
+start "RagLibris Frontend" cmd /c ".venv\Scripts\python.exe -m streamlit run frontend.py"
 
 echo Frontend process started.
 echo.

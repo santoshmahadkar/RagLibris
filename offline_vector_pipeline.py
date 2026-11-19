@@ -16,11 +16,16 @@ import chromadb
 import ollama
 from read_docx import read_docx_from_drive
 from dotenv import load_dotenv
-from read_docx import read_docx_from_drive
 from resume_chunker import is_resume_text, chunk_resume_text
 from generic_chunker import chunk_generic_text
 import pymupdf
 from read_excel import read_excel_from_drive
+from read_docx import read_docx_from_drive
+from read_doc import convert_doc_to_docx
+from read_docx import extract_docx_text
+import time
+from googleapiclient.errors import HttpError
+from read_pdf import extract_pdf_text
 
 load_dotenv()
 
@@ -35,23 +40,134 @@ COLLECTION = os.getenv("COLLECTION")
 # Google Drive inventory and local metadata snapshot
 # ------------------------------------------------------------
 
-def scan_folder(creds, folder_id, file_path="", first_run=True):
-    """Recursively list Drive files and append their metadata to a JSONL file.
+# def scan_folder(creds, folder_id, file_path="", first_run=True):
+#     """Recursively list Drive files and append their metadata to a JSONL file.
 
-    The first call truncates ``google_drive_metadata.jsonl``; recursive calls
-    preserve that snapshot and append file records. Folder records are not
-    written, but their names are carried into each file's ``folder_path``.
-    Only the returned list of children is consumed; continuation tokens are not
-    followed.
+#     The first call truncates ``google_drive_metadata.jsonl``; recursive calls
+#     preserve that snapshot and append file records. Folder records are not
+#     written, but their names are carried into each file's ``folder_path``.
+#     Only the returned list of children is consumed; continuation tokens are not
+#     followed.
 
-    Args:
-        creds: Authorized Google OAuth credentials for Drive API access.
-        folder_id: Drive folder whose children should be listed.
-        file_path: Relative folder path accumulated during recursion.
-        first_run: Whether to initialize the metadata snapshot before listing.
+#     Args:
+#         creds: Authorized Google OAuth credentials for Drive API access.
+#         folder_id: Drive folder whose children should be listed.
+#         file_path: Relative folder path accumulated during recursion.
+#         first_run: Whether to initialize the metadata snapshot before listing.
 
-    Side effects:
-        Calls the Google Drive API and writes file metadata locally.
+#     Side effects:
+#         Calls the Google Drive API and writes file metadata locally.
+#     """
+
+#     SKIP_EXTENSIONS = [
+#         ".zip",
+#         ".rar",
+#         ".7z",
+#         ".exe",
+#         ".msi",
+#         ".dll",
+#         ".iso",
+#         ".bin",
+#     ]
+
+#     def get_skip_reason(file_name):
+
+#         if not file_name:
+#             return "Empty file name"
+
+#         if file_name.startswith("~$"):
+#             return "Office temporary/lock file"
+
+#         extension = os.path.splitext(file_name)[1].lower()
+
+#         if extension in SKIP_EXTENSIONS:
+#             return f"Unsupported extension: {extension}"
+
+#         return None
+
+#     # Empty JSONL file only on the first call
+#     if first_run:
+#         with open("google_drive_metadata.jsonl", "w", encoding="utf-8" ) as output_file:
+#             pass
+
+#     # Connect to Google Drive
+#     service = build('drive', 'v3', credentials=creds)
+
+#     results = service.files().list(
+#         q=f"'{folder_id}' in parents and trashed=false",
+#         fields="nextPageToken, files(id, name, mimeType, modifiedTime, size, webViewLink)",
+#         supportsAllDrives=True,
+#         includeItemsFromAllDrives=True
+#     ).execute()
+
+#     items = results.get('files', [])
+
+#     for item in items:
+
+#         item_id = item['id']
+#         item_name = item['name']
+#         mime_type = item['mimeType']
+
+#         item_path = os.path.join(file_path, item_name)
+
+#         if mime_type == 'application/vnd.google-apps.folder':
+
+#             scan_folder(
+#                 creds,
+#                 item_id,
+#                 item_path,
+#                 first_run=False
+#             )
+
+#         else:
+
+#             metadata = {
+#                 "file_id": item_id,
+#                 "file_name": item_name,
+#                 "mime_type": mime_type,
+#                 "parent_folder_id": folder_id,
+#                 "folder_path": file_path,
+#                 "source": "google_drive",
+#                 "modified_time": item.get("modifiedTime"),
+#                 "size": item.get("size"),
+#                 "web_view_link": item.get("webViewLink")
+#             }
+
+#             file_name = metadata.get("file_name", "")
+
+#             skip_reason = get_skip_reason(file_name)
+
+#             if skip_reason:
+
+#                 print(f"Skipping file: {file_name} "f"| Reason: {skip_reason}", flush=True)
+
+#                 continue
+
+#             with open("google_drive_metadata.jsonl", "a", encoding="utf-8") as output_file:
+#                 output_file.write(json.dumps(metadata, ensure_ascii=False) + "\n")
+
+#             # print(json.dumps(metadata, ensure_ascii=False))
+
+def scan_folder(
+    creds,
+    folder_id,
+    file_path="",
+    first_run=True,
+    max_retries=5
+):
+    """
+    Recursively scan a Google Drive folder and write file metadata
+    to google_drive_metadata.jsonl.
+
+    The metadata file is cleared only on the first call.
+    Recursive calls append to the same snapshot.
+
+    Features:
+    - Handles Google Drive API pagination
+    - Retries transient network/API failures
+    - Uses exponential backoff
+    - Recursively scans subfolders
+    - Skips temporary Office files and unsupported extensions
     """
 
     SKIP_EXTENSIONS = [
@@ -70,6 +186,7 @@ def scan_folder(creds, folder_id, file_path="", first_run=True):
         if not file_name:
             return "Empty file name"
 
+        # Office temporary/lock files
         if file_name.startswith("~$"):
             return "Office temporary/lock file"
 
@@ -80,68 +197,261 @@ def scan_folder(creds, folder_id, file_path="", first_run=True):
 
         return None
 
-    # Empty JSONL file only on the first call
+    # ------------------------------------------------------------
+    # Reset metadata snapshot only at the beginning of the scan
+    # ------------------------------------------------------------
+
     if first_run:
-        with open("google_drive_metadata.jsonl", "w", encoding="utf-8" ) as output_file:
+
+        with open(
+            "google_drive_metadata.jsonl",
+            "w",
+            encoding="utf-8"
+        ):
             pass
 
+        print(
+            "google_drive_metadata.jsonl reset.",
+            flush=True
+        )
+
+    # ------------------------------------------------------------
     # Connect to Google Drive
-    service = build('drive', 'v3', credentials=creds)
+    # ------------------------------------------------------------
 
-    results = service.files().list(
-        q=f"'{folder_id}' in parents and trashed=false",
-        fields="nextPageToken, files(id, name, mimeType, modifiedTime, size, webViewLink)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
+    service = build(
+        "drive",
+        "v3",
+        credentials=creds
+    )
 
-    items = results.get('files', [])
+    # ------------------------------------------------------------
+    # Pagination
+    # ------------------------------------------------------------
 
-    for item in items:
+    page_token = None
 
-        item_id = item['id']
-        item_name = item['name']
-        mime_type = item['mimeType']
+    while True:
 
-        item_path = os.path.join(file_path, item_name)
+        # --------------------------------------------------------
+        # Google Drive API request with retry
+        # --------------------------------------------------------
 
-        if mime_type == 'application/vnd.google-apps.folder':
+        for attempt in range(max_retries):
 
-            scan_folder(
-                creds,
-                item_id,
-                item_path,
-                first_run=False
+            try:
+
+                print(
+                    f"Scanning Google Drive folder: "
+                    f"{folder_id} "
+                    f"(attempt {attempt + 1}/{max_retries})",
+                    flush=True
+                )
+
+                results = service.files().list(
+                    q=f"'{folder_id}' in parents and trashed=false",
+                    fields=(
+                        "nextPageToken, "
+                        "files(id, name, mimeType, modifiedTime, size, webViewLink)"
+                    ),
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute()
+
+                # Request succeeded
+                break
+
+            except (TimeoutError, ConnectionError) as exc:
+
+                if attempt == max_retries - 1:
+
+                    print(
+                        "ERROR: Google Drive request failed after "
+                        f"{max_retries} attempts.",
+                        flush=True
+                    )
+
+                    raise
+
+                wait_seconds = 2 ** attempt
+
+                print(
+                    f"Google Drive connection error: {type(exc).__name__}: {exc}",
+                    flush=True
+                )
+
+                print(
+                    f"Retrying in {wait_seconds} seconds...",
+                    flush=True
+                )
+
+                time.sleep(wait_seconds)
+
+            except HttpError as exc:
+
+                # Retry 429 and 5xx errors
+                status_code = getattr(
+                    exc.resp,
+                    "status",
+                    None
+                )
+
+                retryable = (
+                    status_code == 429
+                    or status_code is not None and status_code >= 500
+                )
+
+                if not retryable:
+
+                    raise
+
+                if attempt == max_retries - 1:
+
+                    print(
+                        "ERROR: Google Drive API request failed after "
+                        f"{max_retries} attempts.",
+                        flush=True
+                    )
+
+                    raise
+
+                wait_seconds = 2 ** attempt
+
+                print(
+                    f"Google Drive API returned HTTP {status_code}.",
+                    flush=True
+                )
+
+                print(
+                    f"Retrying in {wait_seconds} seconds...",
+                    flush=True
+                )
+
+                time.sleep(wait_seconds)
+
+        # --------------------------------------------------------
+        # Process files returned in this page
+        # --------------------------------------------------------
+
+        items = results.get("files", [])
+
+        print(
+            f"Found {len(items)} items in current Drive page.",
+            flush=True
+        )
+
+        for item in items:
+
+            item_id = item["id"]
+            item_name = item["name"]
+            mime_type = item["mimeType"]
+
+            item_path = os.path.join(
+                file_path,
+                item_name
             )
 
-        else:
+            # ----------------------------------------------------
+            # Folder
+            # ----------------------------------------------------
 
-            metadata = {
-                "file_id": item_id,
-                "file_name": item_name,
-                "mime_type": mime_type,
-                "parent_folder_id": folder_id,
-                "folder_path": file_path,
-                "source": "google_drive",
-                "modified_time": item.get("modifiedTime"),
-                "size": item.get("size"),
-                "web_view_link": item.get("webViewLink")
-            }
+            if mime_type == "application/vnd.google-apps.folder":
 
-            file_name = metadata.get("file_name", "")
+                print(
+                    f"Entering folder: {item_path}",
+                    flush=True
+                )
 
-            skip_reason = get_skip_reason(file_name)
+                scan_folder(
+                    creds,
+                    item_id,
+                    item_path,
+                    first_run=False,
+                    max_retries=max_retries
+                )
 
-            if skip_reason:
+            # ----------------------------------------------------
+            # File
+            # ----------------------------------------------------
 
-                print(f"Skipping file: {file_name} "f"| Reason: {skip_reason}", flush=True)
+            else:
 
-                continue
+                metadata = {
+                    "file_id": item_id,
+                    "file_name": item_name,
+                    "mime_type": mime_type,
+                    "parent_folder_id": folder_id,
+                    "folder_path": file_path,
+                    "source": "google_drive",
+                    "modified_time": item.get("modifiedTime"),
+                    "size": item.get("size"),
+                    "web_view_link": item.get("webViewLink")
+                }
 
-            with open("google_drive_metadata.jsonl", "a", encoding="utf-8") as output_file:
-                output_file.write(json.dumps(metadata, ensure_ascii=False) + "\n")
+                file_name = metadata.get(
+                    "file_name",
+                    ""
+                )
 
-            # print(json.dumps(metadata, ensure_ascii=False))
+                skip_reason = get_skip_reason(
+                    file_name
+                )
+
+                if skip_reason:
+
+                    print(
+                        f"Skipping file: {file_name} "
+                        f"| Reason: {skip_reason}",
+                        flush=True
+                    )
+
+                    continue
+
+                # ------------------------------------------------
+                # Append metadata to current Drive snapshot
+                # ------------------------------------------------
+
+                with open(
+                    "google_drive_metadata.jsonl",
+                    "a",
+                    encoding="utf-8"
+                ) as output_file:
+
+                    output_file.write(
+                        json.dumps(
+                            metadata,
+                            ensure_ascii=False
+                        ) + "\n"
+                    )
+
+                print(
+                    f"Added to metadata snapshot: {file_name}",
+                    flush=True
+                )
+
+        # --------------------------------------------------------
+        # Check for next page
+        # --------------------------------------------------------
+
+        page_token = results.get(
+            "nextPageToken"
+        )
+
+        if not page_token:
+
+            break
+
+        print(
+            "More Google Drive files available. "
+            "Fetching next page...",
+            flush=True
+        )
+
+    print(
+        f"Completed scan for folder: {folder_id}",
+        flush=True
+    )
 
 
 # ------------------------------------------------------------
@@ -369,6 +679,8 @@ def main():
     # Stage new files for processing; this JSONL file is opened in append mode.
     if len(new_file_added_to_drive) > 0:
         print(f"Checking if any new file recently added to Google Drive")
+        with open("google_drive_metadata_new.jsonl", "w", encoding="utf-8" ) as output_file:
+                    pass
         with open("google_drive_metadata.jsonl", "r", encoding="utf-8") as input_file, \
             open("google_drive_metadata_new.jsonl", "a", encoding="utf-8") as output_file:
             for line in input_file:
@@ -443,8 +755,7 @@ def main():
 
             elif mime_type == "application/pdf":
                 # Download the PDF as raw bytes and extract readable text
-                # using PyMuPDF. PDF files are binary documents and must
-                # not be decoded directly as UTF-8 text.
+                # using PyMuPDF...
 
                 request = service.files().get_media(fileId=file_id)
 
@@ -455,23 +766,7 @@ def main():
 
                 file_content = request.execute()
 
-                with pymupdf.open(stream=file_content, filetype="pdf") as pdf:
-
-                    pages = []
-
-                    for page_number, page in enumerate(pdf, start=1):
-
-                        page_text = page.get_text("text")
-
-                        if page_text.strip():
-                            pages.append(page_text)
-
-                    text = "\n\n".join(pages).strip()
-
-                print(
-                    f"Extracted {len(text)} characters "
-                    f"from {metadata['file_name']}"
-                )
+                text = extract_pdf_text(file_content)
 
             elif mime_type.startswith("text/"):
                 # Text files
@@ -515,6 +810,53 @@ def main():
                     service,
                     file_id
                 )
+
+            elif mime_type == "application/msword":
+                file_name = metadata['file_name']
+                print(
+                    f"Downloading legacy DOC file: {metadata['file_name']}",
+                    flush=True
+                )
+
+                # ------------------------------------------------------
+                # Download legacy .doc
+                # ------------------------------------------------------
+
+                request = service.files().get_media(
+                    fileId=file_id
+                )
+
+                file_content = request.execute()
+
+                print(
+                    f"Downloaded DOC file: "
+                    f"{len(file_content)} bytes",
+                    flush=True
+                )
+
+                # ------------------------------------------------------
+                # Convert DOC → DOCX
+                # ------------------------------------------------------
+
+                docx_content = convert_doc_to_docx(
+                    file_content,
+                    file_name
+                )
+
+                # ------------------------------------------------------
+                # Extract text from converted DOCX
+                # ------------------------------------------------------
+
+                text = extract_docx_text(
+                    docx_content
+                )
+
+                print(
+                    f"Legacy DOC extraction completed: "
+                    f"{len(text)} characters",
+                    flush=True
+                )
+
                 
             else:
                 # Unsupported file types are not extracted or added to the index.
