@@ -26,6 +26,7 @@ env/
 credentials.json
 credentials_old.json
 token.json
+token_old.json
 *.pem
 *.key
 *.crt
