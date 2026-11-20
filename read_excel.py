@@ -2,62 +2,32 @@ from io import BytesIO
 from openpyxl import load_workbook
 
 
-def read_excel_from_drive(service, file_id):
-
-    print(
-        f"Downloading Excel file (ID: {file_id})",
-        flush=True
-    )
-
-    request = service.files().get_media(fileId=file_id)
-
-    file_content = request.execute()
-
-    print(
-        f"Downloaded Excel file: {len(file_content)} bytes",
-        flush=True
-    )
-
+def extract_excel_text(file_content):
     workbook = load_workbook(
         filename=BytesIO(file_content),
-        read_only=True,
         data_only=True
     )
 
-    sheets = []
+    extracted_text = []
 
-    for worksheet in workbook.worksheets:
+    for sheet in workbook.worksheets:
+        extracted_text.append(f"Sheet: {sheet.title}")
 
-        rows = []
+        for row in sheet.iter_rows(values_only=True):
+            values = []
 
-        for row in worksheet.iter_rows(values_only=True):
-
-            values = [
-                str(value).strip()
-                for value in row
-                if value is not None
-            ]
+            for value in row:
+                if value is not None:
+                    values.append(str(value))
 
             if values:
-                rows.append(" | ".join(values))
+                extracted_text.append(" | ".join(values))
 
-        if rows:
+    return "\n".join(extracted_text).strip()
 
-            sheet_text = (
-                f"Sheet: {worksheet.title}\n\n"
-                + "\n".join(rows)
-            )
 
-            sheets.append(sheet_text)
+def read_excel_from_drive(service, file_id):
+    request = service.files().get_media(fileId=file_id)
+    file_content = request.execute()
 
-    workbook.close()
-
-    text = "\n\n".join(sheets).strip()
-
-    print(
-        f"Excel extraction completed: "
-        f"{len(text)} characters",
-        flush=True
-    )
-
-    return text
+    return extract_excel_text(file_content)

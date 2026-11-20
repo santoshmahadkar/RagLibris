@@ -19,13 +19,14 @@ from dotenv import load_dotenv
 from resume_chunker import is_resume_text, chunk_resume_text
 from generic_chunker import chunk_generic_text
 import pymupdf
-from read_excel import read_excel_from_drive
+from read_excel import read_excel_from_drive, extract_excel_text
 from read_docx import read_docx_from_drive
 from read_doc import convert_doc_to_docx
 from read_docx import extract_docx_text
 import time
 from googleapiclient.errors import HttpError
 from read_pdf import extract_pdf_text
+
 
 load_dotenv()
 
@@ -426,7 +427,7 @@ def scan_folder(
                     )
 
                 print(
-                    f"Added to metadata snapshot: {file_name}",
+                    f"  ↳ Added to metadata snapshot: {file_name}",
                     flush=True
                 )
 
@@ -857,6 +858,31 @@ def main():
                     flush=True
                 )
 
+            elif mime_type == "application/vnd.google-apps.spreadsheet":
+
+                file_name = metadata["file_name"]
+
+                print(f"Exporting Google Sheet: {file_name}", flush=True)
+
+                request = service.files().export_media(
+                    fileId=file_id,
+                    mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+                file_content = request.execute()
+
+                print(
+                    f"Exported Google Sheet: {file_name} "
+                    f"({len(file_content)} bytes)",
+                    flush=True
+                )
+
+                text = extract_excel_text(file_content)
+
+                print(
+                    f"Google Sheet extraction completed: {len(text)} characters",
+                    flush=True
+                )
                 
             else:
                 # Unsupported file types are not extracted or added to the index.
